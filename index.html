@@ -1,0 +1,718 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Intruder</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Courier New', monospace;
+            background: #000;
+        }
+        #gameCanvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #ui {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        #message {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0, 0, 0, 0.95);
+            color: #fff;
+            padding: 30px;
+            border: 3px solid #ff0000;
+            text-align: center;
+            max-width: 600px;
+            display: none;
+            pointer-events: auto;
+            z-index: 100;
+        }
+        #eas {
+            background: #000;
+            color: #fff;
+            border-color: #ff0000;
+            animation: blink 0.5s infinite;
+        }
+        @keyframes blink {
+            0%, 50% { border-color: #ff0000; }
+            51%, 100% { border-color: #fff; }
+        }
+        #instructions {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: #fff;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+        }
+        #crosshair::before,
+        #crosshair::after {
+            content: '';
+            position: absolute;
+            background: #fff;
+        }
+        #crosshair::before {
+            width: 2px;
+            height: 20px;
+            left: 9px;
+        }
+        #crosshair::after {
+            width: 20px;
+            height: 2px;
+            top: 9px;
+        }
+        .button {
+            background: #ff0000;
+            color: #fff;
+            border: none;
+            padding: 10px 20px;
+            margin: 10px;
+            cursor: pointer;
+            font-size: 16px;
+            font-family: 'Courier New', monospace;
+            pointer-events: auto;
+        }
+        .button:hover {
+            background: #cc0000;
+        }
+        #status {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: #fff;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            font-size: 14px;
+        }
+        #gameOver {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(255, 0, 0, 0.9);
+            color: #fff;
+            padding: 50px;
+            font-size: 48px;
+            font-weight: bold;
+            display: none;
+            text-align: center;
+            z-index: 100;
+        }
+    </style>
+</head>
+<body>
+    <canvas id="gameCanvas"></canvas>
+    <div id="ui">
+        <div id="message"></div>
+        <div id="instructions">WASD - Move | Mouse - Look | Click - Interact/Shoot | F - Flashlight | ESC - Unlock Mouse</div>
+        <div id="crosshair"></div>
+        <div id="status"></div>
+        <div id="gameOver"></div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        let scene, camera, renderer, clock;
+        let player = { x: 0, y: 1.6, z: 0, rotX: 0, rotY: 0 };
+        let keys = {};
+        let mouse = { locked: false };
+        let gameState = 'intro';
+        let hasGun = false;
+        let flashlightOn = false;
+        let lightsOn = true;
+        let intruder = null;
+        let intruderSpeed = 0.03;
+        let intruderState = 'waiting';
+        
+        let lightSwitch, basementDoor, shotgunObj, flashlight;
+        let mainLight, flashlightObj;
+
+        const messageEl = document.getElementById('message');
+        const statusEl = document.getElementById('status');
+        const gameOverEl = document.getElementById('gameOver');
+        const canvas = document.getElementById('gameCanvas');
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x000000);
+            scene.fog = new THREE.Fog(0x000000, 0, 30);
+
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(player.x, player.y, player.z);
+
+            renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+
+            clock = new THREE.Clock();
+
+            createHouse();
+            createTV();
+            createBasement();
+            createLightSwitch();
+            createBasementDoor();
+            setupLighting();
+            
+            window.addEventListener('resize', onWindowResize);
+            document.addEventListener('keydown', (e) => { 
+                keys[e.key.toLowerCase()] = true;
+                if(e.key === 'Escape') unlockMouse();
+                if(e.key.toLowerCase() === 'f') toggleFlashlight();
+            });
+            document.addEventListener('keyup', (e) => keys[e.key.toLowerCase()] = false);
+            document.addEventListener('mousemove', onMouseMove);
+            canvas.addEventListener('click', onClick);
+
+            showMessage('You are watching TV at home in Florida bushland...<br>Everything seems peaceful tonight.<br><br><button class="button" onclick="startGame()">Continue</button>', false);
+        }
+
+        function setupLighting() {
+            // Main room light
+            mainLight = new THREE.PointLight(0xffffaa, 1.5, 20);
+            mainLight.position.set(0, 4, 0);
+            mainLight.castShadow = true;
+            scene.add(mainLight);
+
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.4);
+            scene.add(ambientLight);
+
+            // TV light
+            const tvLight = new THREE.PointLight(0x4444ff, 0.5, 10);
+            tvLight.position.set(0, 2, -8);
+            scene.add(tvLight);
+
+            // Flashlight
+            flashlightObj = new THREE.SpotLight(0xffffff, 0, 15, Math.PI / 6, 0.5, 2);
+            flashlightObj.position.copy(camera.position);
+            flashlightObj.target.position.set(0, 0, -1);
+            scene.add(flashlightObj);
+            scene.add(flashlightObj.target);
+        }
+
+        function toggleFlashlight() {
+            if (gameState === 'playing' || gameState === 'hunting') {
+                flashlightOn = !flashlightOn;
+                flashlightObj.intensity = flashlightOn ? 2 : 0;
+                updateStatus(flashlightOn ? 'Flashlight ON' : 'Flashlight OFF');
+            }
+        }
+
+        function createHouse() {
+            const wallMaterial = new THREE.MeshLambertMaterial({ color: 0x8B7355 });
+            const floorMaterial = new THREE.MeshLambertMaterial({ color: 0x654321 });
+
+            // Floor
+            const floor = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), floorMaterial);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Ceiling
+            const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(20, 20), wallMaterial);
+            ceiling.rotation.x = Math.PI / 2;
+            ceiling.position.y = 5;
+            scene.add(ceiling);
+
+            // Walls
+            const walls = [
+                { pos: [0, 2.5, -10], rot: [0, 0, 0], size: [20, 5, 0.5] },
+                { pos: [0, 2.5, 10], rot: [0, 0, 0], size: [20, 5, 0.5] },
+                { pos: [-10, 2.5, 0], rot: [0, Math.PI/2, 0], size: [20, 5, 0.5] },
+                { pos: [10, 2.5, 0], rot: [0, Math.PI/2, 0], size: [20, 5, 0.5] }
+            ];
+
+            walls.forEach(w => {
+                const wall = new THREE.Mesh(new THREE.BoxGeometry(...w.size), wallMaterial);
+                wall.position.set(...w.pos);
+                wall.rotation.set(...w.rot);
+                wall.castShadow = true;
+                wall.receiveShadow = true;
+                scene.add(wall);
+            });
+
+            // Window frame
+            const windowFrame = new THREE.Mesh(
+                new THREE.BoxGeometry(3, 2, 0.3),
+                new THREE.MeshLambertMaterial({ color: 0x333333 })
+            );
+            windowFrame.position.set(5, 2.5, -9.85);
+            scene.add(windowFrame);
+
+            // Intact window glass (will be replaced with broken texture)
+            const windowGlass = new THREE.Mesh(
+                new THREE.PlaneGeometry(2.5, 1.5),
+                new THREE.MeshPhongMaterial({ color: 0x88ccff, transparent: true, opacity: 0.3 })
+            );
+            windowGlass.position.set(5, 2.5, -9.7);
+            windowGlass.name = 'window';
+            scene.add(windowGlass);
+
+            // Shotgun 
+            const gunGroup = new THREE.Group();
+            const gunBarrel = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.05, 0.05, 1, 8),
+                new THREE.MeshLambertMaterial({ color: 0x333333 })
+            );
+            gunBarrel.rotation.z = Math.PI / 2;
+            gunBarrel.position.x = 0.5;
+            
+            const gunStock = new THREE.Mesh(
+                new THREE.BoxGeometry(0.5, 0.1, 0.2),
+                new THREE.MeshLambertMaterial({ color: 0x8B4513 })
+            );
+            gunStock.position.x = -0.2;
+            
+            gunGroup.add(gunBarrel);
+            gunGroup.add(gunStock);
+            gunGroup.position.set(7, 0.5, 7);
+            gunGroup.name = 'shotgun';
+            gunGroup.visible = false;
+            scene.add(gunGroup);
+            shotgunObj = gunGroup;
+        }
+
+        function createLightSwitch() {
+            const switchBox = new THREE.Mesh(
+                new THREE.BoxGeometry(0.2, 0.3, 0.1),
+                new THREE.MeshLambertMaterial({ color: 0xeeeeee })
+            );
+            switchBox.position.set(-5, 1.5, -9.7);
+            switchBox.name = 'lightswitch';
+            scene.add(switchBox);
+            lightSwitch = switchBox;
+        }
+
+        function createBasementDoor() {
+            const door = new THREE.Mesh(
+                new THREE.BoxGeometry(1.5, 3, 0.2),
+                new THREE.MeshLambertMaterial({ color: 0x4a3520 })
+            );
+            door.position.set(-7, 1.5, 5);
+            door.name = 'basementdoor';
+            scene.add(door);
+            basementDoor = door;
+
+            // Door handle
+            const handle = new THREE.Mesh(
+                new THREE.SphereGeometry(0.1, 8, 8),
+                new THREE.MeshLambertMaterial({ color: 0xcccccc })
+            );
+            handle.position.set(-6.5, 1.5, 5.15);
+            scene.add(handle);
+        }
+
+        function createTV() {
+            const tvGroup = new THREE.Group();
+            
+            const tvBox = new THREE.Mesh(
+                new THREE.BoxGeometry(3, 2, 0.3),
+                new THREE.MeshLambertMaterial({ color: 0x111111 })
+            );
+            
+            const tvScreen = new THREE.Mesh(
+                new THREE.PlaneGeometry(2.8, 1.8),
+                new THREE.MeshBasicMaterial({ color: 0x4444ff })
+            );
+            tvScreen.position.z = 0.16;
+            tvScreen.name = 'tvscreen';
+            
+            tvGroup.add(tvBox);
+            tvGroup.add(tvScreen);
+            tvGroup.position.set(0, 2, -9);
+            tvGroup.name = 'tv';
+            scene.add(tvGroup);
+        }
+
+        function createBasement() {
+            const basementFloor = new THREE.Mesh(
+                new THREE.PlaneGeometry(10, 10),
+                new THREE.MeshLambertMaterial({ color: 0x222222 })
+            );
+            basementFloor.rotation.x = -Math.PI / 2;
+            basementFloor.position.set(-7, -5, 5);
+            basementFloor.receiveShadow = true;
+            scene.add(basementFloor);
+
+            // Basement walls
+            const basementWalls = [
+                new THREE.Mesh(new THREE.BoxGeometry(10, 5, 0.5), new THREE.MeshLambertMaterial({ color: 0x444444 })),
+                new THREE.Mesh(new THREE.BoxGeometry(10, 5, 0.5), new THREE.MeshLambertMaterial({ color: 0x444444 })),
+                new THREE.Mesh(new THREE.BoxGeometry(0.5, 5, 10), new THREE.MeshLambertMaterial({ color: 0x444444 })),
+                new THREE.Mesh(new THREE.BoxGeometry(0.5, 5, 10), new THREE.MeshLambertMaterial({ color: 0x444444 }))
+            ];
+            basementWalls[0].position.set(-7, -2.5, 0);
+            basementWalls[1].position.set(-7, -2.5, 10);
+            basementWalls[2].position.set(-12, -2.5, 5);
+            basementWalls[3].position.set(-2, -2.5, 5);
+            basementWalls.forEach(w => scene.add(w));
+        }
+
+        function createIntruder() {
+            const intruderGroup = new THREE.Group();
+            
+            // Body - taller and thinner
+            const body = new THREE.Mesh(
+                new THREE.CylinderGeometry(0.3, 0.3, 1.8, 8),
+                new THREE.MeshLambertMaterial({ color: 0x1a1a1a })
+            );
+            body.position.y = 0.9;
+            
+            // Head - more menacing
+            const head = new THREE.Mesh(
+                new THREE.SphereGeometry(0.35, 8, 8),
+                new THREE.MeshLambertMaterial({ color: 0x2a2a2a })
+            );
+            head.position.y = 2;
+            
+            // Glowing red eyes
+            const eye1 = new THREE.Mesh(
+                new THREE.SphereGeometry(0.08, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0xff0000 })
+            );
+            eye1.position.set(-0.1, 2.1, 0.3);
+            
+            const eye2 = new THREE.Mesh(
+                new THREE.SphereGeometry(0.08, 8, 8),
+                new THREE.MeshBasicMaterial({ color: 0xff0000 })
+            );
+            eye2.position.set(0.1, 2.1, 0.3);
+            
+            intruderGroup.add(body);
+            intruderGroup.add(head);
+            intruderGroup.add(eye1);
+            intruderGroup.add(eye2);
+            intruderGroup.position.set(6, 0, -7);
+            intruderGroup.name = 'intruder';
+            intruderGroup.visible = false;
+            scene.add(intruderGroup);
+            
+            return intruderGroup;
+        }
+
+        function updateIntruder() {
+            if (!intruder || !intruder.visible || intruderState === 'waiting') return;
+
+            const dx = player.x - intruder.position.x;
+            const dz = player.z - intruder.position.z;
+            const distance = Math.sqrt(dx * dx + dz * dz);
+
+            // Check if caught player
+            if (distance < 1.5) {
+                gameOver();
+                return;
+            }
+
+            // Chase player
+            if (intruderState === 'chasing') {
+                const angle = Math.atan2(dx, dz);
+                intruder.position.x += Math.sin(angle) * intruderSpeed;
+                intruder.position.z += Math.cos(angle) * intruderSpeed;
+                intruder.rotation.y = angle;
+
+                // Keep intruder in bounds
+                intruder.position.x = Math.max(-9, Math.min(9, intruder.position.x));
+                intruder.position.z = Math.max(-9, Math.min(9, intruder.position.z));
+            }
+        }
+
+        function gameOver() {
+            gameState = 'dead';
+            gameOverEl.innerHTML = 'YOU DIED<br><br><button class="button" onclick="location.reload()">Try Again</button>';
+            gameOverEl.style.display = 'block';
+            unlockMouse();
+        }
+
+        function showMessage(html, isEAS = false) {
+            messageEl.innerHTML = html;
+            messageEl.style.display = 'block';
+            messageEl.style.pointerEvents = 'auto';
+            if (isEAS) {
+                messageEl.id = 'eas';
+            } else {
+                messageEl.id = 'message';
+            }
+        }
+
+        function hideMessage() {
+            messageEl.style.display = 'none';
+        }
+
+        function startGame() {
+            hideMessage();
+            setTimeout(() => {
+                showMessage('⚠️ EMERGENCY ALERT SYSTEM ⚠️<br><br>A SERIAL KILLER HAS BEEN SPOTTED IN YOUR AREA<br>BUSHLAND, FLORIDA<br><br>LOCK ALL DOORS AND WINDOWS<br>BARRICADE WINDOWS IF POSSIBLE<br>STAY HIDDEN AND SAFE<br><br>DO NOT APPROACH THE SUSPECT<br><br><button class="button" onclick="afterEAS()">Close</button>', true);
+                gameState = 'eas';
+            }, 3000);
+        }
+
+        function afterEAS() {
+            hideMessage();
+            gameState = 'playing';
+            updateStatus('Turn off the lights and go to the basement!');
+            lockMouse();
+        }
+
+        function turnOffLights() {
+            lightsOn = false;
+            mainLight.intensity = 0;
+            scene.background = new THREE.Color(0x000000);
+            scene.fog.far = 10;
+            updateStatus('Lights off! Now go to the basement door!');
+        }
+
+        function goToBasement() {
+            player.y = -4.4;
+            player.x = -7;
+            player.z = 5;
+            camera.position.set(player.x, player.y, player.z);
+            gameState = 'basement';
+            
+            setTimeout(() => {
+                showMessage('📱 WIRELESS EMERGENCY ALERT<br><br>INTRUDER DETECTED NEARBY<br>REMAIN CALM<br>STAY HIDDEN<br><br><button class="button" onclick="windowBreak()">Continue</button>', true);
+            }, 2000);
+        }
+
+        function windowBreak() {
+            hideMessage();
+            
+            // Replace window with broken texture
+            const windowObj = scene.getObjectByName('window');
+            if (windowObj) {
+                scene.remove(windowObj);
+                
+                // Create broken window effect
+                const brokenGlass = new THREE.Group();
+                for (let i = 0; i < 10; i++) {
+                    const shard = new THREE.Mesh(
+                        new THREE.PlaneGeometry(Math.random() * 0.5 + 0.2, Math.random() * 0.5 + 0.2),
+                        new THREE.MeshBasicMaterial({ 
+                            color: 0x88ccff, 
+                            transparent: true, 
+                            opacity: 0.2,
+                            side: THREE.DoubleSide
+                        })
+                    );
+                    shard.position.set(
+                        5 + (Math.random() - 0.5) * 2,
+                        2.5 + (Math.random() - 0.5) * 1.5,
+                        -9.7
+                    );
+                    shard.rotation.z = Math.random() * Math.PI;
+                    brokenGlass.add(shard);
+                }
+                brokenGlass.name = 'brokenwindow';
+                scene.add(brokenGlass);
+            }
+            
+            setTimeout(() => {
+                showMessage('💥 CRASH! The window shattered!<br><br>The intruder is inside!<br>Find the shotgun before he finds you!<br><br><button class="button" onclick="startHunting()">Leave Basement</button>', false);
+            }, 1000);
+        }
+
+        function startHunting() {
+            hideMessage();
+            player.y = 1.6;
+            player.x = -5;
+            player.z = 5;
+            camera.position.set(player.x, player.y, player.z);
+            gameState = 'hunting';
+            
+            shotgunObj.visible = true;
+            
+            intruder = createIntruder();
+            intruder.visible = true;
+            intruderState = 'chasing';
+            
+            updateStatus('Find the shotgun! The intruder is hunting you!');
+            lockMouse();
+        }
+
+        function updateStatus(text) {
+            statusEl.textContent = text;
+            setTimeout(() => {
+                if (statusEl.textContent === text) statusEl.textContent = '';
+            }, 3000);
+        }
+
+        function lockMouse() {
+            canvas.requestPointerLock();
+        }
+
+        function unlockMouse() {
+            document.exitPointerLock();
+        }
+
+        function onMouseMove(e) {
+            if (document.pointerLockElement === canvas) {
+                mouse.locked = true;
+                player.rotY -= e.movementX * 0.002;
+                player.rotX -= e.movementY * 0.002;
+                player.rotX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, player.rotX));
+            } else {
+                mouse.locked = false;
+            }
+        }
+
+        function onClick(e) {
+            if (!mouse.locked && gameState !== 'dead') {
+                lockMouse();
+                return;
+            }
+
+            if (gameState === 'playing' || gameState === 'hunting') {
+                const raycaster = new THREE.Raycaster();
+                raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+                const intersects = raycaster.intersectObjects(scene.children, true);
+                
+                for (let i = 0; i < intersects.length; i++) {
+                    let obj = intersects[i].object;
+                    while (obj.parent && !obj.name) obj = obj.parent;
+                    
+                    if (obj.name === 'lightswitch' && lightsOn && gameState === 'playing') {
+                        turnOffLights();
+                        return;
+                    }
+                    
+                    if (obj.name === 'basementdoor' && !lightsOn && gameState === 'playing') {
+                        goToBasement();
+                        return;
+                    }
+                    
+                    if (obj.name === 'shotgun' && !hasGun && gameState === 'hunting') {
+                        scene.remove(obj);
+                        hasGun = true;
+                        updateStatus('Shotgun acquired! Now kill the intruder!');
+                        return;
+                    }
+                    
+                    if (obj.name === 'intruder' && hasGun && gameState === 'hunting') {
+                        killIntruder();
+                        return;
+                    }
+                }
+            }
+        }
+
+        function killIntruder() {
+            scene.remove(intruder);
+            gameState = 'victory';
+            intruderState = 'dead';
+            updateStatus('');
+            showMessage('💥 BANG! You shot the intruder!<br><br>You are merciless and took no chances.<br><br><button class="button" onclick="callPolice()">Call Authorities</button>', false);
+        }
+
+        function callPolice() {
+            hideMessage();
+            setTimeout(() => {
+                showMessage('🚓 Police arrived, medicated and arrested the intruder.<br><br>You are safe now.<br><br><button class="button" onclick="nextDay()">Next Day</button>', false);
+            }, 1000);
+        }
+
+        function nextDay() {
+            hideMessage();
+            lightsOn = true;
+            mainLight.intensity = 1.5;
+            scene.background = new THREE.Color(0x87ceeb);
+            scene.fog.far = 30;
+            
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+            scene.add(ambientLight);
+            
+            setTimeout(() => {
+                showMessage('📰 NEWSPAPER HEADLINE:<br><br>"LOCAL HERO STOPS SERIAL KILLER"<br><br>You shot the intruder and saved yourself.<br>The police arrested him after medical treatment.<br><br>💵 REWARD: $1,000<br><br>🎉 CONGRATULATIONS! YOU WIN! 🎉<br><br><button class="button" onclick="location.reload()">Play Again</button>', false);
+            }, 2000);
+        }
+
+        function updatePlayer() {
+            const speed = 0.1;
+            
+            if (keys['w']) {
+                player.x -= Math.sin(player.rotY) * speed;
+                player.z -= Math.cos(player.rotY) * speed;
+            }
+            if (keys['s']) {
+                player.x += Math.sin(player.rotY) * speed;
+                player.z += Math.cos(player.rotY) * speed;
+            }
+            if (keys['a']) {
+                player.x -= Math.cos(player.rotY) * speed;
+                player.z += Math.sin(player.rotY) * speed;
+            }
+            if (keys['d']) {
+                player.x += Math.cos(player.rotY) * speed;
+                player.z -= Math.sin(player.rotY) * speed;
+            }
+            
+            // Keep player in bounds (but allow basement)
+            if (player.y > 0) {
+                player.x = Math.max(-9, Math.min(9, player.x));
+                player.z = Math.max(-9, Math.min(9, player.z));
+            } else {
+                player.x = Math.max(-12, Math.min(-2, player.x));
+                player.z = Math.max(0, Math.min(10, player.z));
+            }
+            
+            camera.position.set(player.x, player.y, player.z);
+            camera.rotation.order = 'YXZ';
+            camera.rotation.y = player.rotY;
+            camera.rotation.x = player.rotX;
+
+            // Update flashlight position
+            if (flashlightOn) {
+                flashlightObj.position.copy(camera.position);
+                flashlightObj.target.position.set(
+                    camera.position.x - Math.sin(player.rotY),
+                    camera.position.y + Math.tan(player.rotX),
+                    camera.position.z - Math.cos(player.rotY)
+                );
+            }
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            
+            if (gameState === 'playing' || gameState === 'hunting') {
+                updatePlayer();
+                if (gameState === 'hunting') {
+                    updateIntruder();
+                }
+            }
+            
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        init();
+        animate();
+    </script>
+</body>
+</html>
